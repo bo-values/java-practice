@@ -15,6 +15,4 @@ $ npm -v
 
 
 ## day_1
-- class を作る
-- main関数を知る
-- 
+## day_2
