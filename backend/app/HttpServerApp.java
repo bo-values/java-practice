@@ -8,6 +8,7 @@ import java.io.InputStreamReader;
 import java.lang.reflect.Array;
 import java.net.ServerSocket;
 import java.net.Socket;
+import java.net.SocketTimeoutException;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -15,6 +16,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.concurrent.Executors;
 
 public class HttpServerApp {
 
@@ -23,34 +25,27 @@ public class HttpServerApp {
     private static final int HTTP_HEAD_BODY_SEPARATOR_BYTES = HTTP_NEW_LINE_SEPARATOR.getBytes(StandardCharsets.US_ASCII).length;
     private static final int DEFAULT_PACKET_SIZE = 10_000;
     private static final String CONTENT_LENGTH_HEADER = "content-length";
+    private static final String CONNECTION_HEADER = "connection";
+    private static final String CONNECTION_KEEP_ALIVE = "keep-alive";
     public static void main(String[] args) throws Exception {
         var serverSocket = new ServerSocket(8080);
 
+        var executor = Executors.newFixedThreadPool(10);
+
+        int connections = 0;
+
         while (true) {
             var connection = serverSocket.accept();
-            var requestOpt = readRequest(connection);
-            if (requestOpt.isEmpty()){
-                continue;
-            }
-            printRequest(requestOpt.get());
-
-            try (var os = connection.getOutputStream()) {
-                var body = """
-                        {
-                            "id": 1
-                        }
-                        """;
-
-                var response = """
-                        HTTP/1.1 200 OK
-                        Content-Type: application/json
-                        Content-Length: %d
-
-                        %s
-                        """.formatted(body.getBytes(StandardCharsets.UTF_8).length, body);
-
-                os.write(response.getBytes(StandardCharsets.UTF_8));
-            }
+            connections++;
+            System.out.println("We have new connection: All =" + connections);
+            connection.setSoTimeout(10_000);
+            executor.execute(()->{
+                try {
+                    handleRequest(connection);
+                } catch (Exception e) {
+                    e.printStackTrace();
+                }
+            });
         }
     }
 
@@ -99,6 +94,63 @@ public class HttpServerApp {
         } catch(Exception ignored){
             return 0;
         }
+    }
+
+    private static void handleRequest(Socket connection) throws Exception {
+        try {
+        var requestOpt = readRequest(connection);
+            if (requestOpt.isEmpty()){
+                closeConnnection(connection);
+                return;
+            }
+
+            var request = requestOpt.get();
+            printRequest(request);
+
+            var os = connection.getOutputStream();
+            var body = """
+                    {
+                        "id": 1
+                    }
+                    """;
+
+            var response = new StringBuilder().append("HTTP/1.1 200 OK")
+            .append(HTTP_NEW_LINE_SEPARATOR)
+            .append("Content-Type: application/json")
+            .append(HTTP_NEW_LINE_SEPARATOR)
+            .append("Content-Length: %d".formatted(body.getBytes(StandardCharsets.UTF_8).length))
+            .append(HTTP_HEAD_BODY_SEPARATOR)
+            .append(body)
+            .toString();
+
+            os.write(response.getBytes(StandardCharsets.UTF_8)); 
+
+            if (shouldRequestConnection(request.headers)) {
+                System.out.println("Reuing connection..");
+                handleRequest(connection);
+            }
+
+        } catch (SocketTimeoutException e) {
+            System.out.println("Socket timeout closing");
+            closeConnnection(connection);
+        } catch (Exception e) {
+            System.out.println("Problem while Reading connection");
+            e.getStackTrace();
+            closeConnnection(connection);
+        }
+    }
+
+    private static void closeConnnection(Socket connection) {
+        try {
+            System.out.println("Closing connection..");
+            connection.close();
+        } catch (Exception ignored) {
+            ...
+        }
+    }
+
+    private static boolean shouldRequestConnection(Map<String,List<String>> headers) {
+        return headers.getOrDefault(CONNECTION_HEADER, List.of(CONNECTION_KEEP_ALIVE)).get(0).equals(CONNECTION_KEEP_ALIVE);
     }
 
     private static void printRequest(HttpReq req) {
